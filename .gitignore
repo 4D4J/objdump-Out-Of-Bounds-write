@@ -1,0 +1,14 @@
+# Binutils source tree (large, has its own repo)
+/binutils-gdb/
+
+# Python cache
+__pycache__/
+*.pyc
+
+
+.claude/
+
+# Generated binaries — exploit.bin is tracked as a demo artifact
+*.bin
+*.elf
+!exploit.bin
