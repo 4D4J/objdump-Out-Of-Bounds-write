@@ -8,6 +8,11 @@
 
 ---
 
+## Acknowledgments
+A huge thanks to **bikini** for the shoutout and his fair play regarding this discovery. He is a great guy, I had the pleasure of chatting with him, and he has made some awesome findings of his own. Go check out his work!
+
+---
+
 ## Vulnerability
 
 ### Root cause — `bfd/elf32-dlx.c`
