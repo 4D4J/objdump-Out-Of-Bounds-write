@@ -44,10 +44,10 @@ On x86_64, ELF32 offsets are zero-extended, limiting writes to positive offsets.
 │  .debug_info buffer (192 KB)         │  data     = 0x7f...d010
 │  ├── fake _IO_wide_data  (+0x1000)   │
 │  └── fake _IO_jump_t     (+0x2000)   │
-│              ...                      │
-│  _IO_2_1_stderr_                      │  stderr   = data + 0x21a4d0
-│  _IO_wfile_jumps                      │  wfile    = data + 0x218218
-│  system()                             │  system() = data + 0x87100
+│              ...                     │
+│  _IO_2_1_stderr_                     │  stderr   = data + 0x21a4d0
+│  _IO_wfile_jumps                     │  wfile    = data + 0x218218
+│  system()                            │  system() = data + 0x87100
 └──────────────────────────────────────┘
 ```
 
@@ -72,12 +72,12 @@ objdump writes to stderr ("Can't get contents for section...")
 
 ### The 4 OOB writes (PCREL26)
 
-| # | Target (offset from data) | Effect |
-|---|--------------------------|--------|
-| 0 | `0x21A4CF` = stderr − 1 | `_flags[0:3]` = `"ps\0"` → argument for system() |
-| 1 | `0x21A4F8` = stderr + 0x28 | `_IO_write_ptr` ≠ 0 → forces flush → overflow |
+| # |  Target (offset from data) | Effect |
+|---|----------------------------|--------|
+| 0 |   `0x21A4CF` = stderr − 1  | `_flags[0:3]` = `"ps\0"` → argument for system() |
+| 1 | `0x21A4F8` = stderr + 0x28 | `_IO_write_ptr` ≠ 0 → forces flush → overflow    |
 | 2 | `0x21A56F` = stderr + 0x9F | `_wide_data[0:3]` → points to fake _IO_wide_data |
-| 3 | `0x21A5A7` = stderr + 0xD7 | `vtable[0:3]` → `_IO_wfile_jumps` |
+| 3 | `0x21A5A7` = stderr + 0xD7 | `vtable[0:3]` → `_IO_wfile_jumps`                |
 
 ### Fake structures (in section buffer)
 
@@ -95,9 +95,9 @@ The 3-byte write into `_flags` must satisfy glibc's FILE flag layout:
 
 | Bit | Flag | Constraint | Reason |
 |-----|------|------------|--------|
-| 1 | `_IO_UNBUFFERED` | `cmd[0] & 0x02 == 0` | otherwise `_IO_wdoallocbuf` skips `__doallocate` |
-| 3 | `_IO_NO_WRITES` | `cmd[0] & 0x08 == 0` | otherwise overflow returns WEOF immediately |
-| 13 | `_IO_IS_FILEBUF` | `cmd[1] & 0x20 != 0` | required to enter the doallocate block |
+|  1  |  `_IO_UNBUFFERED` | `cmd[0] & 0x02 == 0` | otherwise `_IO_wdoallocbuf` skips `__doallocate` |
+|  3  |  `_IO_NO_WRITES`  | `cmd[0] & 0x08 == 0` | otherwise overflow returns WEOF immediately      |
+|  13 |  `_IO_IS_FILEBUF` | `cmd[1] & 0x20 != 0` | required to enter the doallocate block           |
 
 Valid: `"ps"` — `'p'` = 0x70, `'s'` = 0x73 ✓
 
@@ -166,9 +166,9 @@ if (reloc_entry->address + 4 > input_section->size)
 
 | File | Description |
 |------|-------------|
-| `poc_generate.py` | Generates the malicious DLX ELF payload (`exploit.bin`) |
-| `poc_ptrace.py` | Standalone exploit — ptrace-based ASLR bypass, no GDB required |
-
+| `poc_generate.py`  | Generates the malicious DLX ELF payload (`exploit.bin`) |
+| `poc_ptrace.py`    | Standalone exploit — ptrace-based ASLR bypass, no GDB required |
+|--------------------|
 ---
 
 ## Disclosure
