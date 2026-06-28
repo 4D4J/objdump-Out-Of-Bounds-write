@@ -168,7 +168,6 @@ if (reloc_entry->address + 4 > input_section->size)
 |------|-------------|
 | `poc_generate.py`  | Generates the malicious DLX ELF payload (`exploit.bin`) |
 | `poc_ptrace.py`    | Standalone exploit — ptrace-based ASLR bypass, no GDB required |
-|--------------------|
 ---
 
 ## Disclosure
