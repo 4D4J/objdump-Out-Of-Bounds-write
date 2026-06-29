@@ -184,3 +184,8 @@ if (reloc_entry->address + 4 > input_section->size)
 
 This vulnerability was reported to the GNU Binutils maintainers.
 Exploit code is provided for authorized security research purposes only.
+
+## Patch 
+
+[https://sourceware.org/git/?p=binutils-gdb.git;a=commit;h=114e3aae2b7e34057c8909301eaf78c15687e8e5
+](https://sourceware.org/git/?p=binutils-gdb.git;a=commit;h=114e3aae2b7e34057c8909301eaf78c15687e8e5)
