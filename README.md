@@ -1,10 +1,10 @@
 # GNU Binutils objdump — OOB Write → FSOP → Arbitrary Code Execution
 
-**Target:** GNU Binutils (all versions through HEAD) — `objdump`
-**Environment:** Debian 13 (Trixie), glibc 2.41, x86_64
-**Impact:** Arbitrary code execution
-**Vector:** Crafted ELF file processed by `objdump -g`
-**ASLR:** Bypassed (deterministic mmap delta)
+**Target:** GNU Binutils (all versions through HEAD) — `objdump` <br>
+**Environment:** Debian 13 (Trixie), glibc 2.41, x86_64 <br>
+**Impact:** Arbitrary code execution <br>
+**Vector:** Crafted ELF file processed by `objdump -g` <br>
+**ASLR:** Bypassed (deterministic mmap delta) <br>
 
 ---
 
