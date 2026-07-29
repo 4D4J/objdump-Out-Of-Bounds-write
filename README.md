@@ -1,4 +1,4 @@
-# GNU Binutils objdump — OOB Write → FSOP → Arbitrary Code Execution
+# GNU Binutils objdump — OOB Write → FSOP → Arbitrary Code Execution - CVE-2026-18220
 
 **Target:** GNU Binutils (all versions through HEAD) — `objdump` <br>
 **Environment:** Debian 13 (Trixie), glibc 2.41, x86_64 <br>
